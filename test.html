@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transport Test</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="bar"><h1>Transport test</h1></header>
+  <main class="page">
+    <p class="muted">Run this on each kind of phone: iPhone and Android, signed into a company Google account and <b>not</b> signed in.
+      Then check the <b>Transport tests</b> tab of the Records sheet (or the inbox) for a row with your note.</p>
+
+    <section class="card">
+      <label class="field"><span>Note that identifies this test</span>
+        <input id="note" placeholder="e.g. Trent iPhone Safari - signed out"></label>
+      <label class="field"><span>Token (same as Code.gs)</span><input id="token" value="change-me"></label>
+    </section>
+
+    <section class="card">
+      <b>Route 1 - Apps Script web app</b>
+      <label class="field"><span>Web app URL (ends in /exec)</span><input id="scriptUrl" placeholder="https://script.google.com/macros/s/…/exec"></label>
+      <button class="primary wide" id="sendPost">Send test via Apps Script</button>
+    </section>
+
+    <section class="card">
+      <b>Route 2 - Google Form</b>
+      <label class="field"><span>Form response URL</span><input id="formUrl" placeholder="https://docs.google.com/forms/d/e/…/formResponse"></label>
+      <label class="field"><span>Field id</span><input id="formEntry" placeholder="entry.1234567890"></label>
+      <button class="primary wide" id="sendForm">Send test via Google Form</button>
+    </section>
+
+    <section class="card">
+      <b>Route 3 - Share to email</b>
+      <p class="muted">Opens the share sheet with a small file. Pick Mail and send it to the group inbox.</p>
+      <button class="primary wide" id="sendShare">Share test file</button>
+    </section>
+
+    <section class="card"><b>Log</b><pre id="log" class="preview"></pre></section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const saved = JSON.parse(localStorage.getItem("transport-test") || "{}");
+    for (const k of ["note", "token", "scriptUrl", "formUrl", "formEntry"]) if (saved[k]) $(k).value = saved[k];
+    const remember = () => {
+      try { localStorage.setItem("transport-test", JSON.stringify(Object.fromEntries(
+        ["note", "token", "scriptUrl", "formUrl", "formEntry"].map((k) => [k, $(k).value])))); } catch {}
+    };
+    const log = (m) => ($("log").textContent = `${new Date().toLocaleTimeString()}  ${m}\n` + $("log").textContent);
+    const message = (route) => ({
+      kind: "test", token: $("token").value.trim(), note: `${$("note").value.trim() || "(no note)"} [${route}]`,
+      user_agent: navigator.userAgent, sent_at: new Date().toISOString(), test_id: Math.random().toString(36).slice(2, 10),
+    });
+
+    $("sendPost").onclick = async () => {
+      remember();
+      const m = message("post");
+      try {
+        await fetch($("scriptUrl").value.trim(), { method: "POST", mode: "no-cors",
+          headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(m) });
+        log(`Apps Script: request went out (id ${m.test_id}). Now check the sheet - only a row there proves it worked.`);
+      } catch (e) { log(`Apps Script: network error - ${e.message}`); }
+    };
+
+    $("sendForm").onclick = async () => {
+      remember();
+      const m = message("form");
+      try {
+        await fetch($("formUrl").value.trim(), { method: "POST", mode: "no-cors",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ [$("formEntry").value.trim()]: JSON.stringify(m) }).toString() });
+        log(`Form: request went out (id ${m.test_id}). Check the form's responses / the sheet.`);
+      } catch (e) { log(`Form: network error - ${e.message}`); }
+    };
+
+    $("sendShare").onclick = async () => {
+      remember();
+      const m = message("share");
+      const file = new File([JSON.stringify(m)], `transport-test-${m.test_id}.splice.json`, { type: "application/json" });
+      try {
+        if (navigator.canShare?.({ files: [file] })) {
+          await navigator.share({ files: [file], title: "Splice transport test" });
+          log(`Share: handed to the share sheet (id ${m.test_id}).`);
+        } else {
+          log("Share: this browser can't share files - that route won't work on this phone.");
+        }
+      } catch (e) { log(`Share: ${e.name === "AbortError" ? "cancelled" : e.message}`); }
+    };
+  </script>
+</body>
+</html>

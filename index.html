@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Splice Field Data</title>
+  <meta name="theme-color" content="#0b3d91">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Splice Data">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div id="app"><p class="page muted">Loading…</p></div>
+  <div id="toast" role="status" hidden></div>
+  <script type="module" src="js/app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch((e) => console.warn("offline cache unavailable", e));
+    }
+  </script>
+</body>
+</html>
