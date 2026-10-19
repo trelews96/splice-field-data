@@ -17,7 +17,7 @@ export const CONFIG = {
   inboxEmail: "",
 
   // Shared value the receiving script checks to drop junk submissions. Not a secret.
-  token: "change-me",
+  token: "Splice-7kq2",
 
   appVersion: "0.1.0",
 };
