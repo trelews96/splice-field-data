@@ -18,7 +18,7 @@ export const CONFIG = {
   inboxEmail: "trent.lewis@ervincable.com",
 
   // Shared value the receiving script checks to drop junk submissions. Not a secret.
-  token: "change-me",
+  token: "Splice-7kq2",
 
   appVersion: "0.2.0",
 };
