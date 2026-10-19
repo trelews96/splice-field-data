@@ -1,7 +1,8 @@
 import { CONFIG } from "./config.js";
 import { db, requestPersistence } from "./db.js";
 import { COLORS, SWATCH, shortCode, tubeAndFiber, tubeCount } from "./fiber.js";
-import { canAutoSend, bundleFile, downloadFile, sendRecord, shareRecords } from "./transport.js";
+import { canAutoSend, usesEmail, bundleFile, dataEmails, downloadFile, openMail, preparePhotoBatches, sendRecord,
+  sharePhotoBatch, unsentPhotoCount } from "./transport.js";
 
 // ------------------------------------------------------------------ small helpers
 const app = document.getElementById("app");
@@ -21,7 +22,7 @@ const FIBER_COUNTS = [6, 12, 24, 36, 48, 72, 96, 144, 216, 288, 360, 432];
 const SPLICE_STATUSES = ["spliced", "express", "open", "spare", "future", "dead"];
 const DEVICE_TYPES = ["splitter", "CWDM mux", "DWDM mux", "other"];
 
-let state = { rec: null, tab: "header", form: null, openTap: null, settings: {} };
+let state = { rec: null, tab: "header", form: null, openTap: null, settings: {}, homeRecords: [], photoBatches: [] };
 
 function toast(msg, ms = 2500) {
   const el = document.getElementById("toast");
@@ -103,7 +104,9 @@ const recordTitle = (r) => r.type === "splice"
   ? (r.header.splice_id || "New splice")
   : (r.header.node ? `Node ${r.header.node}` : "New tap report");
 
-const STATUS_LABEL = { draft: "Draft", queued: "Ready to send", sent: "Sent (unconfirmed)" };
+const STATUS_LABEL = usesEmail()
+  ? { draft: "Draft", queued: "Ready to email", sent: "Emailed" }
+  : { draft: "Draft", queued: "Ready to send", sent: "Sent (unconfirmed)" };
 
 let saveTimer, dirty = false;
 function scheduleSave() {
@@ -185,7 +188,9 @@ window.addEventListener("online", () => sendQueued({ quiet: true }));
 async function renderHome() {
   state.rec = null;
   const records = (await db.allRecords()).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  state.homeRecords = records;   // email + share must open in the same tap, so their data is ready in memory
   const waiting = records.filter((r) => r._status === "queued").length;
+  const photosWaiting = usesEmail() ? unsentPhotoCount(records) : 0;
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
   app.innerHTML = `
     <header class="bar">
@@ -216,10 +221,34 @@ async function renderHome() {
       <div class="actions">
         ${canAutoSend()
           ? `<button data-action="send-all" ${waiting ? "" : "disabled"}>Send ${waiting} waiting</button>`
-          : `<button data-action="share-all" ${waiting ? "" : "disabled"}>Share ${waiting} finished${CONFIG.inboxEmail ? ` to ${esc(CONFIG.inboxEmail)}` : ""}</button>`}
+          : `<button class="${waiting ? "primary" : ""}" data-action="email-all" ${waiting ? "" : "disabled"}>Email ${waiting} finished</button>`}
+        ${photosWaiting ? `<button class="primary" data-action="send-photos" disabled>Send ${photosWaiting} photo${photosWaiting === 1 ? "" : "s"}</button>` : ""}
         <button data-action="backup" ${records.length ? "" : "disabled"}>Save backup file</button>
       </div>
+      ${photosWaiting ? `<p class="muted">Photos: pick your mail app and send to <b>${esc(CONFIG.inboxEmail)}</b>. Large sets go in parts.</p>` : ""}
     </main>`;
+  if (photosWaiting) readyPhotoButton(records);
+}
+
+// Builds the photo files ahead of time, then enables the button (the share sheet must open in the tap).
+async function readyPhotoButton(records) {
+  state.photoBatches = await preparePhotoBatches(records);
+  const btn = app.querySelector('[data-action="send-photos"]');
+  if (!btn || !state.photoBatches.length) return;
+  const n = state.photoBatches.length;
+  if (n > 1) btn.textContent += ` (part 1 of ${n})`;
+  btn.disabled = false;
+}
+
+// After the mail app opened: the phone can't know whether Send was tapped; the receiver's reply confirms.
+async function markEmailed(records) {
+  const now = new Date().toISOString();
+  for (const r of records) {
+    const current = state.rec?.uuid === r.uuid ? state.rec : r;
+    current._status = "sent";
+    current._sent_at = now;
+    await db.putRecord(current);
+  }
 }
 
 // ------------------------------------------------------------------ views: editor
@@ -266,6 +295,8 @@ function renderEditor() {
     header: rec.type === "splice" ? spliceHeader : tapHeader,
     cables: cablesTab, splices: splicesTab, photos: photosTab, taps: tapsTab,
   }[state.tab](rec);
+  // Once the data email has gone, sending the photos is the next step.
+  const photosNext = usesEmail() && rec._status !== "draft" && unsentPhotoCount([rec]) > 0;
   app.innerHTML = `
     <header class="bar">
       <a class="icon-btn" href="#/" aria-label="Back">‹</a>
@@ -276,9 +307,11 @@ function renderEditor() {
     <main class="page">${body}</main>
     <footer class="footer">
       <button class="danger" data-action="delete-record">Delete</button>
-      <button class="primary" data-action="finish">${rec._status === "draft" ? "Finish & send" : "Send again"}</button>
+      ${photosNext ? `<button class="primary" data-action="send-photos" disabled>Send ${unsentPhotoCount([rec])} photos</button>` : ""}
+      <button class="${photosNext ? "" : "primary"}" data-action="finish">${rec._status === "draft" ? "Finish & send" : "Send again"}</button>
     </footer>`;
   if (state.tab === "photos") loadThumbnails();
+  if (photosNext) readyPhotoButton([rec]);
 }
 
 function spliceHeader(rec) {
@@ -860,12 +893,23 @@ app.addEventListener("click", async (e) => {
       if (missing.length && !confirm(`Missing: ${missing.join(", ")}. Finish anyway?`)) break;
       if (rec.type === "splice" && !rec.header.time_out) rec.header.time_out = localTime();
       rec._status = "queued";
-      await saveNow();
-      if (canAutoSend()) { await sendQueued(); renderEditor(); }
-      else if (await shareRecords([rec]).catch(() => false)) {
-        rec._status = "sent"; rec._sent_at = new Date().toISOString();
-        await db.putRecord(rec); renderEditor();
+      rec.updated_at = new Date().toISOString();
+      if (usesEmail()) {
+        try {
+          openMail(dataEmails([rec])[0].url);   // before any await: it has to open in this tap
+        } catch (err) {
+          await saveNow(); toast(err.message, 5000); renderEditor();
+          break;
+        }
+        clearTimeout(saveTimer); dirty = false;
+        await markEmailed([rec]);
+        renderEditor();
+        if (unsentPhotoCount([rec])) toast("Data email ready - tap Send. Then use Send photos.", 5000);
+        break;
       }
+      await saveNow();
+      await sendQueued();
+      renderEditor();
       break;
     }
     case "delete-record":
@@ -876,20 +920,39 @@ app.addEventListener("click", async (e) => {
     case "send-all":
       await sendQueued();
       break;
-    case "share-all": {
-      const queued = (await db.allRecords()).filter((r) => r._status === "queued");
-      if (await shareRecords(queued).catch(() => false)) {
-        for (const r of queued) await db.putRecord({ ...r, _status: "sent", _sent_at: new Date().toISOString() });
-        renderHome();
+    case "email-all": {
+      const queued = state.homeRecords.filter((r) => r._status === "queued");
+      let emails;
+      try { emails = dataEmails(queued); } catch (err) { toast(err.message, 5000); break; }
+      openMail(emails[0].url);   // one email per tap; a big backlog takes a few
+      await markEmailed(emails[0].records);
+      if (emails.length > 1) toast(`Email 1 of ${emails.length} ready - after sending, tap Email again for the rest.`, 6000);
+      renderHome();
+      break;
+    }
+    case "send-photos": {
+      const batch = state.photoBatches[0];
+      if (!batch) break;
+      const total = state.photoBatches.length;
+      let shared;
+      try { shared = await sharePhotoBatch(batch, 1, total); } catch (err) { toast(`Couldn't open sharing: ${err.message}`, 5000); break; }
+      if (!shared) break;
+      for (const uuid of new Set(batch.items.map((i) => i.uuid))) {
+        const r = state.rec?.uuid === uuid ? state.rec : await db.getRecord(uuid);
+        r._sent_photos = [...new Set([...(r._sent_photos || []), ...batch.items.filter((i) => i.uuid === uuid).map((i) => i.photoId)])];
+        await db.putRecord(r);
       }
+      if (total > 1) toast(`Part 1 of ${total} handed to mail - tap Send photos again for the next part.`, 6000);
+      state.rec ? renderEditor() : renderHome();
       break;
     }
     case "backup": {
       const files = await Promise.all((await db.allRecords()).map(bundleFile));
       const all = new File([JSON.stringify(await Promise.all(files.map((f) => f.text().then(JSON.parse))))],
         `splice-backup-${localDate()}.json`, { type: "application/json" });
-      if (navigator.canShare?.({ files: [all] })) await navigator.share({ files: [all] }).catch(() => {});
-      else downloadFile(all);
+      if (navigator.canShare?.({ files: [all] })) {
+        await navigator.share({ files: [all] }).catch((e) => e.name !== "AbortError" && downloadFile(all));
+      } else downloadFile(all);
       break;
     }
     case "purge-sent": {
