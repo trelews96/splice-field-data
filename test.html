@@ -22,6 +22,8 @@
       <b>Route 1 - Apps Script web app</b>
       <label class="field"><span>Web app URL (ends in /exec)</span><input id="scriptUrl" placeholder="https://script.google.com/macros/s/…/exec"></label>
       <button class="primary wide" id="sendPost">Send test via Apps Script</button>
+      <button class="wide" id="sendPostLogin">Send test via Apps Script (with my Google sign-in)</button>
+      <p class="muted">For a web app deployed "Anyone within your company": the second button only works when this browser is signed in to your company Google account.</p>
     </section>
 
     <section class="card">
@@ -53,15 +55,20 @@
       user_agent: navigator.userAgent, sent_at: new Date().toISOString(), test_id: Math.random().toString(36).slice(2, 10),
     });
 
-    $("sendPost").onclick = async () => {
+    // withLogin: also send this browser's Google sign-in cookies. Needed when the web app is
+    // deployed "Anyone within <company>"; a plain no-cors post doesn't carry them.
+    const sendPost = (withLogin) => async () => {
       remember();
-      const m = message("post");
+      const m = message(withLogin ? "post+login" : "post");
       try {
         await fetch($("scriptUrl").value.trim(), { method: "POST", mode: "no-cors",
+          credentials: withLogin ? "include" : "same-origin",
           headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(m) });
-        log(`Apps Script: request went out (id ${m.test_id}). Now check the sheet - only a row there proves it worked.`);
+        log(`Apps Script${withLogin ? " (with sign-in)" : ""}: request went out (id ${m.test_id}). Now check the sheet - only a row there proves it worked.`);
       } catch (e) { log(`Apps Script: network error - ${e.message}`); }
     };
+    $("sendPost").onclick = sendPost(false);
+    $("sendPostLogin").onclick = sendPost(true);
 
     $("sendForm").onclick = async () => {
       remember();
